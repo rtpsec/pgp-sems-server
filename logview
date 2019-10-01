@@ -1,0 +1,166 @@
+# ---- BEGIN LOG VIEW FILE ---
+
+!/bin/bash
+
+help_menu() {
+echo "==========================="
+echo "         Menu   "
+echo "==========================="
+echo " "
+echo " [1] cluster"
+echo " [2] tcpwrapper"
+echo " [3] mail"
+echo " [4] SOAP proxy"
+echo " [5] omf"
+echo " [6] data layer"
+echo " [7] backup"
+echo " "
+echo " "
+handle_input
+}
+
+
+
+cluster_menu() {
+echo " "
+echo "===================================================="
+echo "                Cluster Logs  "
+echo "===================================================="
+echo " "
+tail /var/log/ovid/cluster-$(date +%Y-%m-%d).log
+
+echo " "
+}
+
+
+
+tcpwrapper_menu() {
+echo " "
+echo " "
+echo "===================================================="
+echo "                TCP Wrapper logs  "
+echo "===================================================="
+echo " "
+tail /var/log/ovid/tcpwrapper-$(date +%Y-%m-%d).log
+echo " "
+}
+
+
+mail_menu() {
+echo " "
+echo " "
+echo "===================================================="
+echo "                Mail logs  "
+echo "===================================================="
+echo " "
+tail /var/log/ovid/postfix-$(date +%Y-%m-%d).log
+}
+
+
+proxy_menu() {
+echo " "
+echo " "
+echo " "
+echo "===================================================="
+echo "                SOAP Proxy logs  "
+echo "===================================================="
+echo " "
+tail /var/log/ovid/proxy-$(date +%Y-%m-%d).log
+echo " "
+}
+
+
+
+omf_menu() {
+echo " "
+echo " "
+echo " "
+echo "===================================================="
+echo "                OMF logs  "
+echo "===================================================="
+echo " "
+tail /var/log/ovid/omf-$(date +%Y-%m-%d).log
+}
+
+
+data_menu() {
+echo " "
+echo " "
+echo " "
+echo "===================================================="
+echo "                Data Layer logs  "
+echo "===================================================="
+echo " "
+tail /var/log/ovid/datalayer-$(date +%Y-%m-%d).log
+}
+
+
+
+backups_menu() {
+day_of_week=$(date +%d)
+echo " "
+yesterday=$(( $day_of_week - 1 ))
+echo " "
+echo " "
+echo " "
+echo "===================================================="
+echo "                Backup logs from Last Night  "
+echo "===================================================="
+echo " "
+tail /var/log/ovid/backup-$(date +%Y-%m-$yesterday).log
+echo " "
+}
+
+handle_input() {
+
+while true; do
+
+prompt_user
+if [ $user_input = 1 ]
+then
+cluster_menu
+fi
+
+if [ $user_input = 2 ]
+then
+tcpwrapper_menu
+fi
+
+if [ $user_input = 3 ]
+then
+mail_menu
+fi
+
+if [ $user_input = 4 ]
+then
+proxy_menu
+fi
+
+if [ $user_input = 5 ]
+then
+omf_menu
+fi
+
+if [ $user_input = 6 ]
+then
+data_menu
+fi
+
+if [ $user_input = 7 ]
+then
+backups_menu
+fi
+
+if [ $user_input = ""]
+then
+help_menu
+fi
+
+done
+}
+
+
+prompt_user() {
+echo -n "Choose your option: "
+read user_input
+}
