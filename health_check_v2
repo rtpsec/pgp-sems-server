@@ -1,0 +1,447 @@
+#!/bin/bash
+# This file has been scrubbed of any identifiable information.   Before it can work you must edit some IPs and hostnames.
+
+email="email@domain.com"
+# use email filter in your inbox for [pgp] to catch all
+email_prefix="[pgp] - prod/dev/cat/uat - "
+
+check_time="$(date +%k)" # the hour this script ran
+echo -n "Current Hour: "
+echo $check_time
+
+# This backup status is used throughout the script
+
+backup_status="$(psql oviddb ovidrw -c "select * from backup where status='2';" | grep row | tr --delete '()rows')"
+backup_complete="$(cat /var/log/ovid/backup-$(date +%Y-%m-%d).log |grep 'pool cleaned' | wc -l)" # --date="1 days ago"  # One day ago is depending on when you run the backup job.
+echo -n "Backup Status: "
+echo -n $backup_status
+echo " -- zero means backup isnt running"
+
+
+
+#########################################################################################################
+# Checking if the most recent backup was successful
+#########################################################################################################
+
+fun_check_backup_jobs() {
+
+echo "Checking backup job"
+
+# Backup status should equal zero.  It means no backup jobs are currently running.
+if [ $check_time -eq $action_time ] && [ $backup_status -eq "0" ]; then
+
+echo -n "it's "
+echo -n $check_time
+echo " and backup is not running"
+
+        if [ $backup_complete -gt 0 ]; then
+        echo "Backup completed successful"
+        else
+        echo "Backup didn't complete, sending email"
+        tail /var/log/ovid/backup-$(date +%Y-%m-%d).log | mail -s "$email_prefix $(hostname) failed to perform a backup last night." $email < /dev/null
+        fi
+fi
+
+# Backup status checks how many rows in the database for the current jobs, if greater than 0 it's still running
+
+if [ $check_time -eq $action_time ] && [ $backup_status -gt "0" ]; then
+        echo "It's "
+        echo $check_time
+        echo " and a backup job is still running!"
+
+        psql oviddb ovidrw -c "select * from backup where status='2';" | mail -s "$email_prefix $(hostname) has a backup job that is still running." $email < /dev/null
+fi
+
+}
+
+#########################################################################################################
+# Checking /var/tmp to see if a bunch of messages are queued up
+#########################################################################################################
+
+fun_check_temp_folder() {
+
+echo "Checking /var/tmp folder"
+
+if [ $check_time -ge $action_time ]; then
+
+        if (( $(ls -lah /var/tmp | wc -l) > "1000" ));   # was 3000, lowered to 1000 in Jan 2020
+        then
+                echo "send email"
+                echo $(ls -lah /var/tmp | wc -l)
+                mail -s "$email_prefix $(hostname) has $(ls -lah /var/tmp |wc -l) pending items in /var/tmp" $email < /dev/null
+        fi
+fi
+
+}
+
+
+#########################################################################################################
+# Checking if the Database integrity was scanned
+#########################################################################################################
+
+fun_database_check() {
+echo "Checking Database integrity"
+
+# Don't run before 8am central time
+if [ $check_time -ge $db_action_time ]; then
+
+        # return 1 if it's completed for today.  0 if it hasn't
+        if (( $(grep -i "SCAN: done" /var/log/ovid/cluster*.log |grep $(date +%Y-%m-%d) |wc -l) == 0));
+        then
+                echo "A scan hasn't completed"
+                echo $(grep -i "SCAN: done" /var/log/ovid/cluster*.log |tail) |mail -s "$email_prefix $(hostname) has not completed a integrity check in the past 24 hours" $email < /dev/null
+        fi
+fi
+}
+
+#########################################################################################################
+#  Checking Admin WebGUI Status:
+#########################################################################################################
+
+fun_check_admin_gui() {
+echo "Checking admin gui"
+
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(netstat -anp |grep 0.0.0.0 | grep LISTEN |grep 9000 | wc -l) == 0 ));
+        then
+                # The service is down
+                # Run this command:  pgpsysconf --restart httpd"
+                echo "Run this command from the server pgpsysconf --restart httpd" | mail -s "$email_prefix $(hostname) has detected the WebGUI port 9000 not open" $email < /dev/null
+        fi
+fi
+
+}
+
+#########################################################################################################
+#  Checking Webmail webpage Status:
+#########################################################################################################
+
+fun_check_secmail_http() {
+echo "Checking webmail portal http"
+
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(netstat -anp |grep 0.0.0.0 |grep LISTEN |grep httpd| wc -l) == 0 ));
+        then
+                # The service is down
+                # Run this command:  pgpsysconf --restart httpd"
+                echo "Run this command: pgpsysconf --restart httpd" | mail -s "$email_prefix $(hostname) has detected webmail port 443 is not open" $email < /dev/null
+        fi
+fi
+}
+
+
+#########################################################################################################
+#   Checking PGP tcp connection wrapper (pgptcpwrapper):
+#########################################################################################################
+
+fun_check_pgp_tcpwrapper() {
+
+echo "checking tcpwrapper"
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(netstat -anp |grep 0.0.0.0 | grep LISTEN |grep 444 | wc -l) == 0 ));
+        then
+                # The service is down
+                # Run this command:  pgpsysconf --restart pgptcpwrapper "
+                echo "Run this command: pgpsysconf --restart pgptcpwrapper" | mail -s "$email_prefix $(hostname) has detected the clustering port 444 is not open" $email < /dev/null
+                # Command pgpsysconf --restart pgptcpwrapper 
+        fi
+fi
+
+}
+
+
+#########################################################################################################
+#   Checking PGP Email Proxy (pgpproxyd): 
+#########################################################################################################
+# this usually uses port 25 and 2525
+
+fun_check_pgp_proxyd() {
+echo "Checking mail proxy"
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(netstat -anp |grep 0.0.0.0 | grep LISTEN | grep pgpproxyd | wc -l) == 0 ));
+        then
+                # The service is down
+                # Run this command:  pgpsysconf --restart pgpuniversal"
+                echo "Run this command: pgpsysconf --restart pgpuniversal" | mail -s "$email_prefix $(hostname) has detected the email proxy service is not running" $email < /dev/null
+        fi
+fi
+
+}
+
+
+#########################################################################################################
+#  Checking PGP Ignition Key Service (pgptokend):
+#########################################################################################################
+
+fun_check_pgptokend() {
+echo "Checking pgptokend"
+
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(netstat -anp |grep 0.0.0.0 |grep pgptokend| wc -l) == 0 ));
+        then
+                # The service is down.    call the TAM
+                mail -s "$email_prefix $(hostname) has detected the PGP ignition key service" $email < /dev/null
+        fi
+fi
+
+}
+
+#########################################################################################################
+#  Checking PGP Clustering and desktop listener (pgpsyncd):
+#########################################################################################################
+
+fun_check_clustering() {
+echo "Checking clustering"
+
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(netstat -anp |grep 0.0.0.0 |grep pgpsyncd | wc -l) == 0 ));
+        then
+                # The service is down
+                mail -s "$email_prefix $(hostname) has detected the desktop listener (pgpsyncd) isn't running" $email < /dev/null
+        fi
+fi
+
+}
+
+
+#########################################################################################################
+#  Checking PGP LDAP Keyserver service (slapd):
+##########################################################################################################
+
+fun_check_ldap() {
+echo "Checking ldap"
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(netstat -anp |grep 0.0.0.0 | grep LISTEN | grep slapd | wc -l) == 0 ));
+        then 
+                # The service is down
+                mail -s "$email_prefix $(hostname) has detected the LDAP key service isnt running (slapd)" $email < /dev/null
+        fi
+fi
+
+}
+
+
+
+#########################################################################################################
+#  Checking Tomcat:
+#########################################################################################################
+
+fun_check_tomcat() {
+echo "Checking tomcat"
+
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(netstat -anp |grep 0.0.0.0 | grep LISTEN |grep java |wc -l) == 0 ));
+        then
+                # The service is down
+                mail -s "$email_prefix $(hostname) has detected Tomcat service isnt running" $email < /dev/null
+        fi
+fi
+}
+
+
+
+#########################################################################################################
+#  Checking Replication Service (pgprep):
+#########################################################################################################
+
+
+fun_check_pgprep() {
+echo "checking replication service"
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(ps aux |grep pgprep | wc -l) == 1 ));
+        then
+                # The service is down
+                mail -s "$email_prefix $(hostname) has detected replication service isnt running" $email < /dev/null
+                # Run pgpsysconf --restart pgprep
+        fi
+fi
+
+}
+
+
+
+#########################################################################################################
+#  Checking availabile file space on root partition
+#########################################################################################################
+#
+# Don't run if backup is currently running
+
+fun_check_disk_space() {
+echo "Checking disk space"
+if [ $backup_status -eq "0" ]; then
+
+        if [ $(df /root | awk '/[0-9]%/{print $(NF-2)}') -lt "50000" ]; then
+                # Disk space is low
+                echo " I think disk space is low"
+                echo -n $(df /root | awk '/[0-9]%/{print $(NF-2)}')
+                echo " is less than 50000"
+                echo $(df -h) | mail -s "$email_prefix $(hostname) partition has only $(df -h $PWD | awk '/[0-9]%/{print $(NF-2)}') free" $email < /dev/null
+        fi
+fi
+
+}
+
+
+#########################################################################################################
+# Validating Cluster to Cluster Communication
+#########################################################################################################
+
+fun_check_cluster_to_cluster_comm() {
+
+echo "checking cluster communication"
+
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        node_1_cluster=$(pgprepctl reachable 192.167.1.1 444  | tr --delete '1234567890:.' |wc -c)   # change IPs to your environment
+        node_2_cluster=$(pgprepctl reachable 192.168.1.2 444  | tr --delete '1234567890:.' |wc -c)
+        node_3_cluster=$(pgprepctl reachable 192.168.1.3 444  | tr --delete '1234567890:.' |wc -c)
+        node_4_cluster=$(pgprepctl reachable 192.168.1.4 444  | tr --delete '1234567890:.' |wc -c)
+        node_5_cluster=$(pgprepctl reachable 192.168.1.5 444  | tr --delete '1234567890:.' |wc -c)
+        node_6_cluster=$(pgprepctl reachable 192.168.1.6 444  | tr --delete '1234567890:.' |wc -c)
+
+        cluster_talk_success="32" # 32 is the default for success
+        cluster_talk_failure="36" # 36 is the default for failure
+
+        if [ $node_1_cluster -eq $cluster_talk_success ]; then
+                echo "node1 is online"
+        else
+                if [ $node_1_cluster -eq $cluster_talk_failure ]; then
+                echo "cluster failed communication"
+                mail -s "$email_prefix - Communication between $(hostname) and node1" $email < /dev/null  #change node1 to your hostname
+                fi
+        fi
+
+
+        if [ $node_2_cluster -eq $cluster_talk_success ]; then
+                echo "node2 is online"
+        else
+                if [ $node_2_cluster -eq $cluster_talk_failure ]; then
+                echo "cluster failed communication"
+                mail -s "$email_prefix - Communication between $(hostname) and node2 has failed" $email < /dev/null
+                fi
+        fi
+
+        if [ $node_3_cluster -eq $cluster_talk_success ]; then
+                echo "node3 is online"
+        else
+                if [ $node_3_cluster -eq $cluster_talk_failure ]; then
+                echo "cluster failed communication"
+                mail -s "$email_prefix - Communication between $(hostname) and node3 has failed" $email < /dev/null
+                fi
+        fi
+
+        if [ $node_4_cluster -eq $cluster_talk_success ]; then
+                echo "node4 is online"
+        else
+                if [ $node_4_cluster -eq $cluster_talk_failure ]; then
+                echo "cluster failed communication"
+                mail -s "$email_prefix - Communication between $(hostname) and node4 has failed" $email < /dev/null
+                fi
+        fi
+
+        if [ $node_5_cluster -eq $cluster_talk_success ]; then
+                echo "node5 is online"
+        else
+                if [ $node_5_cluster -eq $cluster_talk_failure ]; then
+                echo "cluster failed communication"
+                mail -s "$email_prefix - Communication between $(hostname) and node5 has failed" $email < /dev/null
+                fi
+        fi
+
+        if [ $node_6_cluster -eq $cluster_talk_success ]; then
+                echo "node6 is online"   
+        else
+                if [ $node_6_cluster -eq $cluster_talk_failure ]; then
+                echo "cluster failed communication"
+                mail -s "$email_prefix - Communication between $(hostname) and node6 has failed" $email < /dev/null
+                fi
+        fi
+fi
+
+}
+
+
+#########################################################################################################
+# Determine the local time zone and set runtime
+#########################################################################################################
+
+
+local_time_zone=$(date +%Z)
+
+fun_check_health() {
+
+        echo -n "[01/14] "
+        fun_check_backup_jobs
+        echo -n "[02/14] "
+        fun_check_temp_folder
+        echo -n "[03/14] "
+        fun_database_check
+        echo -n "[04/14] "
+        fun_check_admin_gui
+        echo -n "[05/14] "
+        fun_check_secmail_http
+        echo -n "[06/14] "
+        fun_check_pgp_tcpwrapper
+        echo -n "[07/14] "
+        fun_check_pgp_proxyd
+        echo -n "[08/14] "
+        fun_check_pgptokend
+        echo -n "[09/14] "
+        fun_check_clustering
+        echo -n "[10/14] "
+        fun_check_ldap
+        echo -n "[11/14] "
+        fun_check_tomcat
+        echo -n "[12/14] "
+        fun_check_pgprep
+        echo -n "[13/14] "
+        fun_check_disk_space
+        echo -n "[14/14] "
+        fun_check_cluster_to_cluster_comm
+        echo "Done."
+}
+
+
+
+
+if [ $local_time_zone == "CST" ]; then
+        # Central Time Zone
+        # action time defines what hour it kicks off
+        action_time="6" # AM time
+        echo -n "Action Time: "
+        echo -n $action_time
+        echo "am"
+        db_action_time="8" # AM time
+        fun_check_health
+
+fi
+
+if [ $local_time_zone == "PST" ]; then
+        # PST
+        action_time="4"
+        echo "This box is located in PST"
+        echo -n "Action Time: "
+        echo -n $action_time
+        echo "am"
+        db_action_time="5"
+        fun_check_health
+fi
