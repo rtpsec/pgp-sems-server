@@ -1,0 +1,9 @@
+#!/bin/bash
+# This script will pull 4 values from the database, you can run it on each node to see if replication is matching.  Keys is usually a few numbers off.
+echo " "
+echo "Database values"
+echo " "
+psql oviddb ovidrw -c "select count(*) from consumer"
+psql oviddb ovidrw -c "select count(*) from internal_user"
+psql oviddb ovidrw -c "select count(*) from boomerang_user"
+psql oviddb ovidrw -c "select count(*) from key"
