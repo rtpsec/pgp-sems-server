@@ -1,0 +1,35 @@
+# Get into the database
+psql oviddb ovidrw
+
+# Show cluster members
+select * from cluster_member;
+
+# Quit out of PostGres SQL
+\q
+
+# Show admin users
+psql oviddb ovidrw -c "select name from omc_administrator order by 1;"
+
+# delete old cluster entry
+delete from cluster_member where host ='hostname.domain.com';
+
+# remove hung backup jobs, change value 2 as needed.
+delete from backup where status ='2';
+
+
+# Show IPs allowed to Send email (the SMGs)
+psql oviddb ovidrw -c "select * from service_access_control_ips;"
+
+
+# Copy the email server allow list to a CSV file (whatever the current folder is)
+psql oviddb ovidrw -c "\copy service_access_control_ips to 'access_control_ips.csv' csv;"
+
+# Copy the current cluster entries in the table to a CSV file
+psql oviddb ovidrw -c "\copy cluster_member to 'cluster_table.csv' csv;"
+
+
+# Restore the file in the new environment from the CSV file.
+psql oviddb ovidrw -c "\copy service_access_control_ips FROM 'access_control_ips.csv' DELIMITER ',' CSV;"
+
+# Check if a backup is currently running -- 0 = none  1 or more equals a backup is currently running
+psql oviddb ovidrw -c "select * from backup where status='2';" | grep row | tr --delete '()rows'
