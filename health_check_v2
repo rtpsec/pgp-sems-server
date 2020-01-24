@@ -83,7 +83,7 @@ fun_database_check() {
 echo "Checking Database integrity"
 
 # Don't run before 8am central time,  added line to not check after 8:10am
-if [ $check_time -ge $db_action_time ] && [ $(date+%M) -le "10" ]; then
+if [ $check_time -ge $db_action_time ] && [ $(date +%M) -le "10" ]; then
 
         # return 1 if it's completed for today.  0 if it hasn't
         if (( $(grep -i "SCAN: done" /var/log/ovid/cluster*.log |grep $(date +%Y-%m-%d) |wc -l) == 0));
