@@ -13,6 +13,7 @@ echo $check_time
 
 backup_status="$(psql oviddb ovidrw -c "select * from backup where status='2';" | grep row | tr --delete '()rows')"
 backup_complete="$(cat /var/log/ovid/backup-$(date +%Y-%m-%d).log |grep 'pool cleaned' | wc -l)" # --date="1 days ago"  # One day ago is depending on when you run the backup job.
+backup_diskspace="$(cat /var/log/ovid/backup-$(date +%Y-%m-%d).log |grep 'No space'| wc -l)"
 echo -n "Backup Status: "
 echo -n $backup_status
 echo " -- zero means backup isnt running"
@@ -40,6 +41,10 @@ echo " and backup is not running"
         echo "Backup didn't complete, sending email"
         tail /var/log/ovid/backup-$(date +%Y-%m-%d).log | mail -s "$email_prefix $(hostname) failed to perform a backup last night." $email < /dev/null
         fi
+        
+        if [ $backup_diskspace -gt 0 ]; then
+        echo "Backup server out of disk space"
+        mail -s "$email_prefix $(hostname) Backup server is out of disk space" < /dev/null
 fi
 
 # Backup status checks how many rows in the database for the current jobs, if greater than 0 it's still running
