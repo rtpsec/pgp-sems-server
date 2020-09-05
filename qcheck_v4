@@ -1,0 +1,575 @@
+# To protect the innocent, this document has been scrubbed of any IP addresses, locations, hostnames, domains, etc.. 
+
+#!/bin/bash
+email="email@address.com"
+# use email filter in your inbox for [pgp] to catch all
+email_prefix="[pgp] -prod-dev-qa-uat - "
+
+check_time="$(date +%k)" # the time this script ran
+echo -n "Current Hour: "
+echo $check_time
+
+# variables used for validated domains exist
+prefs_company_exists=$(cat /etc/ovid/prefs.xml |grep domain |grep domain.com |wc -l)
+prefs_company_exists=$(cat /etc/ovid/prefs.xml |grep domain |grep domain.com |wc -l)
+
+# This backup status is used throughout the script
+
+backup_status="$(psql oviddb ovidrw -c "select * from backup where status='2';" | grep row | tr --delete '()rows')"
+# Backup_complete use to use 'pool cleaned' but that only works in debug mode.
+backup_complete="$(cat /var/log/ovid/backup-$(date +%Y-%m-%d).log |grep 'Backup delivered' | wc -l)" # --date="1 days ago"  -- This requires debugging enabled for backups in /etc/ovid/debug.xml
+backup_connection_lost="$(cat /var/log/ovid/backup-$(date +%Y-%m-%d).log |grep "MAIN: Failed to deliver backup" |wc -l)"
+
+echo -n "Backup Status: "
+echo -n $backup_status
+echo " -- zero means backup isnt running"
+
+#########################################################################################################
+# Checking if the most recent backup was successful
+#########################################################################################################
+
+fun_check_backup_jobs() {
+
+echo "Checking backup job"
+
+# Backup status should equal zero.  It means no backup jobs are currently running.
+if [ $check_time -eq $action_time ] && [ $backup_status -eq "0" ]; then
+
+echo -n "it's "
+echo -n $check_time
+echo " and backup is not running"
+
+        if [ $backup_complete -gt 0 ] && [ $backup_connection_lost -eq 0 ]; then
+        echo "Backup completed successful"
+        else
+        echo "Backup didn't complete, sending email"
+        mail -s "$email_prefix $(hostname) failed to perform a backup last night." $email < /dev/null
+        fi
+fi
+
+# Backup status checks how many rows in the database for the current jobs, if greater than 0 it's still running
+
+if [ $check_time -eq $action_time ] && [ $backup_status -gt "0" ]; then
+        echo "It's "
+        echo $check_time
+        echo " and a backup job is still running!"
+
+        psql oviddb ovidrw -c "select * from backup where status='2';" | mail -s "$email_prefix $(hostname) has a backup job that is still running." $email < /dev/null
+fi
+
+}
+
+#########################################################################################################
+# Checking /var/tmp to see if a bunch of messages are queued up
+#########################################################################################################
+
+fun_check_temp_folder() {
+
+echo "Checking /var/tmp folder"
+
+if [ $check_time -ge $action_time ]; then
+
+        if (( $(ls -lah /var/tmp | wc -l) > "1000" ));   # was 3000, lowered to 1000 in Jan 2020
+        then
+                echo "send email"
+                echo $(ls -lah /var/tmp | wc -l)
+                mail -s "$email_prefix $(hostname) has $(ls -lah /var/tmp |wc -l) pending items in /var/tmp" $email < /dev/null
+        fi
+fi
+
+}
+
+
+#########################################################################################################
+# Checking if the Database integrity was scanned
+#########################################################################################################
+
+fun_database_check() {
+echo "Checking Database integrity"
+
+# Run once or twice in the morning
+if [ $check_time -eq $db_action_time ] && [ $(date +%M) -lt "5" ]; then
+
+        echo "Running"
+        # return 1 if it's completed for today.  0 if it hasn't
+        if (( $(grep -i "SCAN: done" /var/log/ovid/cluster*.log |grep $(date +%Y-%m-%d) |wc -l) == 0));
+        then
+                echo "A scan hasn't completed"
+                echo $(grep -i "SCAN: done" /var/log/ovid/cluster*.log |tail) |mail -s "$email_prefix $(hostname) has not completed a integrity check in the past 24 hours" $email < /dev/null
+        fi
+
+fi
+}
+
+
+#########################################################################################################
+#  Checking Netstat Table for Ports Open:
+#########################################################################################################
+
+fun_check_ports() {
+
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+echo -n "       [$5/8] checking $2: "
+
+        if (( $(netstat -anp |grep 0.0.0.0 | grep LISTEN |grep $1 $3 | wc -l) == 0 ));
+        then
+                # The service is down
+                # Run this command:  pgpsysconf --restart httpd"
+                mail -s "$email_prefix $(hostname) has detected $2 $4" $email < /dev/null
+        else
+        echo "OK"
+
+        fi
+
+fi
+
+}
+
+fun_port_scan() {
+# $1 is the port to check
+# $2 is the friendly name of the service
+# $3 is an extra entry in netstat check, make sure it starts with a pipe |
+# $4 is the message displayed on the alert
+# $5 is the number it's running in
+
+echo "Checking Open Ports"
+echo "  ========================================================="
+
+fun_check_ports "9000" "webdmin gui" "" " is not listening on port 9000" "1"
+fun_check_ports "httpd" "email portal" "" " is not listening on port 443" "2"
+fun_check_ports "444" "pgptcpwrapper" "" " (clustering) is not listening on port 444" "3"
+fun_check_ports "pgpproxyd" "Email proxy (pgpproxyd)" "" " port is not listening" "4"
+fun_check_ports "pgptokend" "PGP Ignition" "" " Key Service is not running" "5"
+fun_check_ports "pgpsyncd" "PGP Desktop" "" " listener service is not running" "6"
+fun_check_ports "slapd" "Ldap key" "" " service (slapd) is not running" "7"
+fun_check_ports "java" "Tomcat" "" " Service isn't running" "8"
+echo "  ========================================================="
+}
+
+
+#########################################################################################################
+#  Checking Replication Service (pgprep):
+#########################################################################################################
+
+
+fun_check_pgprep() {
+echo "checking replication service"
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        if (( $(ps aux |grep pgprep | wc -l) == 1 ));
+        then
+                # The service is down
+                mail -s "$email_prefix $(hostname) has detected replication service isnt running" $email < /dev/null
+                # Run pgpsysconf --restart pgprep
+        fi
+fi
+
+}
+
+
+
+#########################################################################################################
+#  Checking availabile file space on root partition
+#########################################################################################################
+#
+# Don't run if backup is currently running
+
+fun_check_disk_space() {
+echo "Checking disk space"
+if [ $backup_status -eq "0" ]; then
+
+        if [ $(df /root | awk '/[0-9]%/{print $(NF-2)}') -lt "50000" ]; then
+                # Disk space is low
+                echo " I think disk space is low"
+                echo -n $(df /root | awk '/[0-9]%/{print $(NF-2)}')
+                echo " is less than 50000"
+                echo $(df -h) | mail -s "$email_prefix $(hostname) partition has only $(df -h $PWD | awk '/[0-9]%/{print $(NF-2)}') free" $email < /dev/null
+        fi
+fi
+
+}
+
+
+#########################################################################################################
+# Validating Cluster to Cluster Communication
+#########################################################################################################
+
+fun_check_cluster_to_cluster_comm() {
+
+echo "checking cluster communication"
+
+# Don't run if backup is currently running
+if [ $backup_status -eq "0" ]; then
+
+        echo " "
+        echo "  ========================================================="
+
+        mw_pgp_a0_cluster="192.168.1.1"
+        mw_pgp_b0_cluster="192.168.1.2"
+        wc_pgp_a0_cluster="192.168.1.3"
+        wc_pgp_b0_cluster="192.168.1.4"
+        mw_pgp_c0_cluster="192.168.1.6"
+        mw_pgp_d0_cluster="192.168.1.7"
+
+        fun_ping_cluster_for_status() {
+
+        ping_cluster_member=$(pgprepctl reachable $1 444)
+                if [[ $ping_cluster_member != *"not"* ]]; then
+                        echo "  [$3/6] $2 is online"
+                else
+                        echo "Email goes here"
+                        mail -s "$email_prefix $(hostname) failed cluster communication with $2" $email < /dev/null
+                fi
+
+        }
+
+        fun_ping_cluster_for_status "$mw_pgp_a0_cluster" "cluster-a" "1"
+        fun_ping_cluster_for_status "$mw_pgp_b0_cluster" "cluster-b" "2"
+        fun_ping_cluster_for_status "$mw_pgp_c0_cluster" "cluster-c" "3"
+        fun_ping_cluster_for_status "$mw_pgp_d0_cluster" "cluster-d" "4"
+        fun_ping_cluster_for_status "$wc_pgp_a0_cluster" "cluster-a" "5"
+        fun_ping_cluster_for_status "$wc_pgp_b0_cluster" "cluster-b" "6"
+
+        echo "  ========================================================="
+        echo " "
+
+fi
+
+}
+
+
+#########################################################################################################
+# Pulling values from the database and validating they haven't been modified by anyone.
+#########################################################################################################
+
+
+fun_check_database() {
+
+echo -n "$4: "
+
+        if [[ $(psql oviddb ovidrw -x -c "select $1 from $2;") != *"$3"* ]]; then
+                #mail -s "$email_prefix $(hostname) has detected $2 $4" $email < /dev/null
+                echo "-ERROR-"
+        else
+        echo "OK"
+
+        fi
+}
+
+fun_validate_database_values() {
+
+# $1 is select value from table
+# $2 is table and extra conditions
+# $3 is checking if a value exists in the results
+# $4 Job title
+
+echo "--------------------------------"
+
+# Determine if this is a LAN server based on the hostname
+if [[ $(hostname) == *"<SNIP>"* ]] || [[ $(hostname) == *"<SNIP>"* ]]; then
+        echo "This server does not handle <SNIP>"
+else
+
+        if [ $local_time_zone == "CDT" ]; then
+                # Static Mail Routes for Midwest
+                fun_check_database "domain_name, ip_address" "static_route where domain_name = '<SNIP DOMAIN.COM>'" "<SNIP OUTBOUND MAIL SERVER>" "<SNIP LOCATION> - <SNIP>"
+                fun_check_database "domain_name, ip_address" "static_route where domain_name = '*'" "<SNIP OUTBOUND MAIL SERVER>" "<SNIP> - default mail route"
+        fi
+
+        if [ $local_time_zone == "PDT" ]; then
+                # Static Mail Routes for WestCoast
+                fun_check_database "domain_name, ip_address" "static_route where domain_name = '<SNIP DOMAIN.COM>'" "<SNIP OUTBOUND MAIL SERVER>" "<SNIP> - <SNIP>"
+                fun_check_database "domain_name, ip_address" "static_route where domain_name = '*'" "<SNIP OUTBOUND MAIL SERVER>" "<SNIP> - default mail route"
+        fi
+fi
+
+echo "---------------------------------"
+# Checking LDAP configuration
+fun_check_database "hostname, port" "ldap_server where hostname = '<SNIP>'" "<SNIP>" "ActiveDirectory domain"
+fun_check_database "hostname, port" "ldap_server where hostname = '<SNIP>'" "636" "ActiveDirectory port"
+fun_check_database "binddn" "ldap_directory" "CN=<SNIP>,DC=com" "ActiveDirctory bind"
+echo "---------------------------------"
+
+}
+
+
+
+####################################################################################################
+# Checking local logs hitting the inbound mail policy.  This is an outbound only server
+####################################################################################################
+
+fun_check_proxy_logs_for_policy_inbound_rule_hit() {
+
+
+        if [[ $(hostname) == *"<SNIP DMZ>-a0"* ]] || [[ $(hostname) == *"<SNIP DMZ>-b0"* ]]; then
+                fun_check_proxy_logs_now
+
+        fi
+
+        if [[ $(hostname) == *"<SNIP LAN>-c0"* ]] || [[ $(hostname) == *"<SNIP LAN>-d0"* ]]; then
+                echo "skipping"
+
+        fi
+
+}
+
+fun_check_proxy_logs_now() {
+        proxy_logs_for_inbound=$(grep Inbound /var/log/ovid/proxy-$(date +%Y-%m-%d).log |wc -l)
+
+        # Checking Today's proxy logs to see if there was an inbound rule hit.
+        # Currently we do not use Inbound traffic so there should be none.
+
+        if [[ $proxy_logs_for_inbound -gt 0 ]]; then
+                echo " "
+                echo " ----- WARNING -----------------------------"
+                echo "Email traffic is hitting inbound rules!"
+                echo "Check the policy on the server"
+                echo "Keep in mind, the policy is synced across servers"
+                echo " "
+                echo "--------------------------------------------"
+                echo "Sending email .... "
+        mail -s "$email_prefix $(hostname) - logs show email hitting the inbound policy rules." $email < /dev/null
+        else
+        echo "No hits on inbound policy.  This is good."
+        fi
+}
+
+
+
+
+
+
+####################################################################################################
+# Checking VIPs and local webhost for "HTTP/1.1 302 Found"
+####################################################################################################
+
+fun_curl_webpages_for_response_codes(){
+
+mw_pgp_a0_eth1="192.168.1.1"
+mw_pgp_b0_eth1="192.168.1.2"
+wc_pgp_a0_eth1="192.168.1.3"
+wc_pgp_b0_eth1="192.168.1.4"
+
+                if [[ $(hostname) == *"<SNIP DMZ>"* ]]; then
+                        local_eth1="$mw_pgp_a0_eth1"
+                        fun_grab_https_localhost "$local_eth1"
+                fi
+
+                if [[ $(hostname) == *"<SNIP DMZ>"* ]]; then
+                        local_eth1="$mw_pgp_b0_eth1"
+                        fun_grab_https_localhost "$local_eth1"
+                fi
+
+                if [[ $(hostname) == *"<SNIP DMZ>"* ]]; then
+                        local_eth1="$wc_pgp_a0_eth1"
+                        fun_grab_https_localhost "$local_eth1"
+                fi
+
+                if [[ $(hostname) == *"<SNIP DMZ>"* ]]; then
+                        local_eth1="$wc_pgp_b0_eth1"
+                        fun_grab_https_localhost "$local_eth1"
+                fi
+
+
+                # Skip if it's a LAN server, contains <SNIP>
+
+                if [[ $(hostname) == *"<SNIP LAN>"* ]]; then
+                        echo "This server is local, skipping"
+
+                fi
+
+                if [[ $(hostname) == *"<SNIP LAN>"* ]]; then
+                        echo "This server is local, skipping"
+
+                fi
+
+
+
+}
+
+
+fun_grab_https_localhost() {
+
+echo " "
+echo "  ========================================================="
+
+local_time_zone=$(date +%Z)
+echo -n "       Downloading..."
+
+get_page_status_localhost_302=$(curl https://$1 -k -insecure |head -n1)
+get_page_status_localhost_200=$(curl https://$1/b/nsb.e -k -insecure |head -n1)
+
+
+echo " "
+echo -n "       [1/4] Checking local webserver for a 302 message: "
+if [[ $get_page_status_localhost_302 != *"302 Found"* ]]; then
+        echo $get_page_status_localhost_302
+        echo "Email goes here"
+        mail -s "$email_prefix $(hostname) - securemail local failed - / returning - $get_page_status_localhost_302" $email < /dev/null
+else
+        echo "OK"
+fi
+
+echo -n "       [2/4] Checking local webserver for a 200 message: "
+if [[ $get_page_status_localhost_200 != *"200"* ]]; then
+        echo $get_page_status_localhost_200
+        echo "Email goes here"
+        mail -s "$email_prefix $(hostname) - login page returning - $get_page_status_localhost_200" $email < /dev/null
+else
+        echo "OK"
+fi
+
+
+
+# Because of firewall restrictions, we're only checking paths in their local DMZ
+if [ $local_time_zone == "CDT" ]; then
+
+        # If we're in the central time zone, we pull the http headers from central load balancers
+        get_page_status_ea_vip_securemail_302=$(curl -I https://<SNIP domain.com>/ -k -insecure |head -n1)
+        get_page_status_ea_vip_securemail_200=$(curl -I https://<SNIP domain.com/b/nsb.e -k -insecure |head -n1)
+
+        echo -n "       [3/4] Checking MW VIP / for redirect 302: "
+        if [[ $get_page_status_mw_vip_<SNIP domain.com>_302 != *"302 Found"* ]]; then
+                echo $get_page_status_ea_vip_<SNIP domain.com_302
+                echo " "
+                echo "Email goes here"
+                mail -s "$email_prefix $(hostname) - midwest load balancer vip - returning $get_page_status_mw_vip_<SNIP domain.com>_302" $email < /dev/null
+        else
+                echo "OK"
+        fi
+
+        echo -n "       [4/4] Checking MW VIP for login page 200: "
+        if [[ $get_page_status_mw_vip_<Snip domain.com>_200 != *"200"* ]]; then
+                echo $get_page_status_mw_vip_<Snip domain.com>_200
+                echo " "
+                echo "Email goes here"
+                mail -s "$email_prefix $(hostname) - mw load balancer vip login page - $get_page_status_mw_vip_<SNIP domain.com>_200" $email < /dev/null
+        else
+                echo "OK"
+        fi
+
+
+
+fi
+
+
+# Because of <SNIP>
+if [ $local_time_zone == "PDT" ]; then
+
+        # the <SNIP> y on it
+        get_page_status_wc_vip_domain_302=$(curl -I https://<SNIP domain>/b -k -insecure |head -n1)
+        get_page_status_wc_vip_domain_200=$(curl -I https://<SNIP domain>/b/nsb.e -k -insecure |head -n1)
+
+        echo -n "       [3/4] Checking WC VIP for / 302 redirect: "
+        if [[ $get_page_status_wc_vip_<SNIP domain>_302 != *"302 Found"* ]]; then
+                echo $get_page_status_wc_vip_<SNIP domain>_302
+                echo " "
+                echo "Email goes here"
+                mail -s "$email_prefix $(hostname) - <SNIP> load balancer vip not presenting 302 redirect" $email < /dev/null
+        else
+                echo "OK"
+        fi
+
+        echo -n "       [4/4] Checking WC VIP for login page 200: "
+        if [[ $get_page_status_wc_vip_<SNIP domain>_200 != *"200"* ]]; then
+                echo $get_page_status_wc_vip_<SNIP domain>_200
+                echo " "
+                echo "Email goes here"
+                mail -s "$email_prefix $(hostname) - <SNIP> - check login page" $email < /dev/null
+        else
+                echo "OK"
+        fi
+
+
+fi
+
+echo "  ========================================================="
+
+
+}
+
+##########################################################################################################
+
+###############################
+# Check prefs.xml for changes
+###############################
+fun_check_prefs_xml_integrity() {
+
+if [[ $(diff /etc/ovid/prefs.xml /etc/ovid/prefs.golden | wc -l) -gt "0" ]]; then
+        echo " "
+        echo "----------------------------------------"
+        echo "Someone modified the prefs.xml settings"
+       echo "----------------------------------------"
+fi
+
+}
+
+
+
+
+#########################################################################################################
+# Determine the local time zone and set runtime
+#########################################################################################################
+
+
+# This produces CDT for central time zone.  
+local_time_zone=$(date +%Z)
+total_jobs="11"
+
+
+fun_check_health() {
+
+        echo -n "[01/$total_jobs] "
+        fun_check_backup_jobs
+        echo -n "[02/$total_jobs] "
+        fun_check_temp_folder
+        echo -n "[03/$total_jobs] "
+        fun_database_check
+        echo -n "[04/$total_jobs] "
+        fun_port_scan
+        echo -n "[05/$total_jobs] "
+        fun_check_pgprep
+        echo "[06/$total_jobs] Checking prefs.xml for changes"
+        fun_check_prefs_xml_integrity
+        echo -n "[07/$total_jobs] "
+        fun_check_disk_space
+        echo -n "[08/$total_jobs] "
+        fun_check_cluster_to_cluster_comm
+        echo "[09/$total_jobs] Querying database entries "
+        fun_validate_database_values
+        echo -n "[10/$total_jobs] "
+        fun_check_proxy_logs_for_policy_inbound_rule_hit
+        echo "[11/$total_jobs] Checking HTTP response headers"
+        fun_curl_webpages_for_response_codes
+        echo "Healthcheck Done."
+
+}
+
+
+
+
+if [ $local_time_zone == "CDT" ]; then
+        # <SNIP>
+        # action time defines what hour it kicks off
+        action_time="6" # AM time
+        echo "This box is located in <SNIP>"
+        echo -n "Action Time: "
+        echo -n $action_time
+        echo "am"
+        db_action_time="8" # AM time
+        fun_check_health
+
+fi
+
+if [ $local_time_zone == "PDT" ]; then
+        # <SNIP>
+        action_time="4"
+        echo "This box is located in <SNIP>"
+        echo -n "Action Time: "
+        echo -n $action_time
+        echo "am"
+        db_action_time="6"
+        fun_check_health
+fi
